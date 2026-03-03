@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -18,12 +17,13 @@ for lag in range(1, 4):
     data[f'rainfall_prev{lag}'] = (data['rainfall'].shift(lag) == 'yes').fillna(0).astype(int)
     data[f'temp_prev{lag}'] = data['temparature'].shift(lag).bfill()
 
+
 data['temp_3day_avg'] = data['temparature'].rolling(3).mean().bfill()
 
 y_class = data['rainfall'].astype(int)
 
 X = data.drop(['rainfall'], axis=1)
-X = X.fillna(X.mean(numeric_only=True)) 
+X = X.fillna(X.mean(numeric_only=True))
 
 X_train, X_temp, y_train, y_temp = train_test_split(
     X, y_class, test_size=0.3, random_state=42, stratify=y_class
@@ -43,7 +43,19 @@ if y_train.nunique() > 1:
     X_train_bal, y_train_bal = smote.fit_resample(X_train, y_train)
 else:
     print("Warning: y_train contains only one class. SMOTE cannot be applied. Proceeding without oversampling.")
-    X_train_bal, y_train_bal = X_train.copy(), y_train.copy() 
+    X_train_bal, y_train_bal = X_train.copy(), y_train.copy()
+
+
+if isinstance(X_train_bal, pd.DataFrame):
+    X_train_bal = X_train_bal.to_numpy()
+if isinstance(X_val, pd.DataFrame):
+    X_val = X_val.to_numpy()
+if isinstance(X_test, pd.DataFrame):
+    X_test = X_test.to_numpy()
+
+
+if isinstance(y_train_bal, pd.Series):
+    y_train_bal = y_train_bal.to_numpy()
 
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train_bal)
@@ -55,34 +67,42 @@ rf = RandomForestClassifier(
     class_weight='balanced', random_state=42, n_jobs=-1
 )
 
-if y_train_bal.nunique() > 1:
-    positive_class_count_bal = y_train_bal.value_counts().get(1, 0)
-    negative_class_count_bal = y_train_bal.value_counts().get(0, 0)
-    scale_pos_weight_val = negative_class_count_bal / positive_class_count_bal
+
+unique_classes_y_train_bal = np.unique(y_train_bal)
+if len(unique_classes_y_train_bal) > 1:
+    
+    counts = np.bincount(y_train_bal.astype(int))
+    positive_class_count_bal = counts[1] if len(counts) > 1 else 0
+    negative_class_count_bal = counts[0] if len(counts) > 0 else 0
+    
+    
+    scale_pos_weight_val = negative_class_count_bal / positive_class_count_bal if positive_class_count_bal != 0 else 1.0
+    
     xgb = XGBClassifier(
         n_estimators=1200, max_depth=7, learning_rate=0.05,
         scale_pos_weight=scale_pos_weight_val,
-        use_label_encoder=False, eval_metric='logloss', random_state=42, n_jobs=-1
+        eval_metric='logloss', random_state=42, n_jobs=-1
     )
 else:
-   
-    xgb = None 
+    xgb = None
     print("Warning: XGBoost will not be trained due to single class in y_train_bal.")
 
 lgbm = LGBMClassifier(
-    n_estimators=1000, max_depth=12, learning_rate=0.05,
-    class_weight='balanced', random_state=42, n_jobs=-1
+    n_estimators=1000, max_depth=5, learning_rate=0.05,
+    class_weight='balanced', random_state=42, n_jobs=-1,
+    feature_name=None, 
+    verbose=-1 
 )
 
 lr = LogisticRegression(max_iter=2000, class_weight='balanced', solver='liblinear')
 
 trained_models = {}
 
-if y_train_bal.nunique() > 1:
+if len(unique_classes_y_train_bal) > 1:
     rf.fit(X_train_scaled, y_train_bal)
     trained_models['rf'] = rf
     if xgb:
-        xgb.fit(X_train_bal, y_train_bal)
+        xgb.fit(X_train_scaled, y_train_bal) 
         trained_models['xgb'] = xgb
     lgbm.fit(X_train_scaled, y_train_bal)
     trained_models['lgbm'] = lgbm
@@ -91,12 +111,13 @@ if y_train_bal.nunique() > 1:
 else:
     print("Warning: No models trained due to single class in y_train_bal.")
 
-y_pred_rf = np.full(len(y_test), y_train_bal.iloc[0]) if 'rf' not in trained_models else trained_models['rf'].predict(X_test_scaled)
-y_pred_xgb = np.full(len(y_test), y_train_bal.iloc[0]) if 'xgb' not in trained_models else trained_models['xgb'].predict(X_test) 
-y_pred_lgbm = np.full(len(y_test), y_train_bal.iloc[0]) if 'lgbm' not in trained_models else trained_models['lgbm'].predict(X_test_scaled)
-y_pred_lr = np.full(len(y_test), y_train_bal.iloc[0]) if 'lr' not in trained_models else trained_models['lr'].predict(X_test_scaled)
+y_pred_rf = np.full(len(y_test), y_train_bal[0]) if 'rf' not in trained_models else trained_models['rf'].predict(X_test_scaled) # Access y_train_bal as numpy array
+y_pred_xgb = np.full(len(y_test), y_train_bal[0]) if 'xgb' not in trained_models else trained_models['xgb'].predict(X_test_scaled) # Predict with scaled data for XGBoost
+y_pred_lgbm = np.full(len(y_test), y_train_bal[0]) if 'lgbm' not in trained_models else trained_models['lgbm'].predict(X_test_scaled)
+y_pred_lr = np.full(len(y_test), y_train_bal[0]) if 'lr' not in trained_models else trained_models['lr'].predict(X_test_scaled)
 
-if y_train_bal.nunique() > 1:
+
+if len(unique_classes_y_train_bal) > 1:
     print(f"Random Forest Accuracy: {accuracy_score(y_test, y_pred_rf):.4f}")
     print(f"XGBoost Accuracy: {accuracy_score(y_test, y_pred_xgb):.4f}")
     print(f"LightGBM Accuracy: {accuracy_score(y_test, y_pred_lgbm):.4f}")
